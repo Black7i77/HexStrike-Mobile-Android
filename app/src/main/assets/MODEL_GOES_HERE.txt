@@ -1,0 +1,1 @@
+Run scripts/prepare-model.sh before building. The ~1.12 GB official GGUF is not included in this source ZIP.

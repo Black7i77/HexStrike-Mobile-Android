@@ -20,9 +20,22 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
+import android.content.Intent;
+import android.net.Uri;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public final class MainActivity extends Activity {
     private LocalCore core;
+    private ModelBridge modelBridge;
+    private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private volatile boolean modelReady = false;
+    private TextView statusView;
+    private Button sendButton;
+    private static final int PICK_GGUF = 1407;
     private TextView transcript;
     private EditText prompt;
     private ScrollView scroll;
@@ -68,6 +81,7 @@ public final class MainActivity extends Activity {
         getWindow().setNavigationBarColor(BG);
         getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         core = new LocalCore(this); core.start();
+        modelBridge = new ModelBridge();
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -107,7 +121,7 @@ public final class MainActivity extends Activity {
         TextView title = text("HEXSTRIKE MOBILE", 15, RED);
         title.setTypeface(null, Typeface.BOLD);
         headings.addView(title);
-        headings.addView(text("UNOFFICIAL  •  OFFLINE CORE  •  v0.6", 9, Color.LTGRAY));
+        headings.addView(text("UNOFFICIAL  •  OFFLINE AI  •  v0.8", 9, Color.LTGRAY));
         header.addView(headings, new LinearLayout.LayoutParams(0, -2, 1f));
         root.addView(header, new LinearLayout.LayoutParams(-1, dp(40)));
 
@@ -117,13 +131,14 @@ public final class MainActivity extends Activity {
         LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(-1, dp(26));
         statusParams.topMargin = dp(2);
         root.addView(status, statusParams);
+        statusView = status;
 
         LinearLayout toolbar = new LinearLayout(this);
         toolbar.setOrientation(LinearLayout.HORIZONTAL);
         LinearLayout.LayoutParams toolParams = new LinearLayout.LayoutParams(-1, dp(36));
         toolParams.topMargin = dp(5);
         Button health = button("DEVICE CHECK");
-        Button clear = button("CLEAR CHAT");
+        Button clear = button("CHANGE MODEL");
         LinearLayout.LayoutParams left = new LinearLayout.LayoutParams(0, -1, 1);
         left.rightMargin = dp(4);
         toolbar.addView(health, left);
@@ -135,7 +150,7 @@ public final class MainActivity extends Activity {
         scroll = new ScrollView(this);
         scroll.setFillViewport(true);
         scroll.setBackground(shape(PANEL, 8, 0));
-        transcript = text("HEXSTRIKE SECURITY CONSOLE\n[OK] Local Android core started\n[OK] No IP or Wi-Fi setup needed\n[INFO] Rule-based help (no AI model yet)\n\nAsk a question or tap DEVICE CHECK.\n", 12, WHITE);
+        transcript = text("HEXSTRIKE SECURITY CONSOLE\n[OK] Local Android core started\n[AI] Preparing bundled offline model...\n\nDevice Check works independently.\n", 12, WHITE);
         transcript.setTextIsSelectable(true);
         transcript.setPadding(dp(9), dp(9), dp(9), dp(9));
         scroll.addView(transcript, new ScrollView.LayoutParams(-1, -2));
@@ -171,6 +186,7 @@ public final class MainActivity extends Activity {
         prompt.setBackground(shape(Color.rgb(16, 23, 34), 6, Color.rgb(52, 64, 82)));
         inputRow.addView(prompt, new LinearLayout.LayoutParams(0, -1, 1f));
         Button send = button("SEND");
+        sendButton = send;
         LinearLayout.LayoutParams sendParams = new LinearLayout.LayoutParams(dp(62), dp(36));
         sendParams.leftMargin = dp(4);
         inputRow.addView(send, sendParams);
@@ -183,15 +199,36 @@ public final class MainActivity extends Activity {
         root.addView(footer, footParams);
 
         health.setOnClickListener(v -> addEntry("DEVICE REPORT", core.deviceReport()));
-        clear.setOnClickListener(v -> transcript.setText("HEXSTRIKE SECURITY CONSOLE\nNew local chat started.\n"));
+        clear.setOnClickListener(v -> {
+            Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            pick.setType("*/*");
+            pick.addCategory(Intent.CATEGORY_OPENABLE);
+            startActivityForResult(pick, PICK_GGUF);
+        });
         Runnable submit = () -> {
             String question = prompt.getText().toString().trim();
             if (question.isEmpty()) return;
             prompt.setText("");
             addEntry("YOU", question);
-            addEntry("HEXSTRIKE", core.reply(question));
+            if (!modelReady) {
+                addEntry("HEXSTRIKE", "AI is loading. If this build has no bundled model, use CHANGE MODEL to import a GGUF file.");
+                return;
+            }
+            sendButton.setEnabled(false);
+            addEntry("HEXSTRIKE", "Generating offline response…");
+            worker.execute(() -> {
+                String result;
+                try { result = modelBridge.generate(question, 240); }
+                catch (Exception e) { result = "ERROR: " + e.getMessage(); }
+                final String reply = result;
+                runOnUiThread(() -> {
+                    addEntry("AI", reply);
+                    sendButton.setEnabled(true);
+                });
+            });
         };
         send.setOnClickListener(v -> submit.run());
+        autoLoadBundledModel();
         prompt.setOnEditorActionListener((v, actionId, event) -> {
             if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_SEND) {
                 submit.run(); return true;
@@ -200,8 +237,77 @@ public final class MainActivity extends Activity {
         });
     }
 
+
+    // This happens automatically on first launch; subsequent launches reuse the
+    // app-private copy. The model is never downloaded or accessed over the network.
+    private void autoLoadBundledModel() {
+        worker.execute(() -> {
+            String message;
+            try {
+                File target = new File(getFilesDir(), "hexstrike-model.gguf");
+                if (!target.isFile() || target.length() < 100_000_000L) {
+                    try (InputStream in = getAssets().open("qwen2.5-1.5b-instruct-q4_k_m.gguf");
+                         OutputStream out = new FileOutputStream(new File(getFilesDir(), "model-import.tmp"))) {
+                        byte[] buf = new byte[1024 * 1024];
+                        int count;
+                        while ((count = in.read(buf)) != -1) out.write(buf, 0, count);
+                    }
+                    File temporary = new File(getFilesDir(), "model-import.tmp");
+                    if (temporary.length() < 100_000_000L || !temporary.renameTo(target)) {
+                        throw new java.io.IOException("Model copy incomplete; check phone storage");
+                    }
+                }
+                boolean loaded = modelBridge.load(target.getAbsolutePath());
+                modelReady = loaded;
+                message = loaded ? "Bundled Qwen2.5 AI loaded. Ask me a question!" :
+                        "Model could not load. Check available RAM or use CHANGE MODEL.";
+            } catch (java.io.FileNotFoundException missing) {
+                message = "Bundled GGUF missing from APK. Run scripts/prepare-model.sh, rebuild, or tap CHANGE MODEL.";
+            } catch (Exception error) {
+                message = "Automatic model setup failed: " + error.getMessage();
+            }
+            final String result = message;
+            runOnUiThread(() -> {
+                addEntry("AI", result);
+                statusView.setText(modelReady ? "● CORE ONLINE  •  AI READY  •  OFFLINE" :
+                        "● CORE ONLINE  •  AI MODEL NOT LOADED");
+            });
+        });
+    }
+
+    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != PICK_GGUF || resultCode != RESULT_OK || data == null) return;
+        Uri uri = data.getData();
+        if (uri == null) return;
+        modelReady = false;
+        addEntry("SYSTEM", "Importing model into private storage; this can take a while…");
+        worker.execute(() -> {
+            String msg;
+            try {
+                File target = new File(getFilesDir(), "hexstrike-model.gguf");
+                try (InputStream in = getContentResolver().openInputStream(uri);
+                     OutputStream out = new FileOutputStream(target)) {
+                    if (in == null) throw new java.io.IOException("Cannot open selected model");
+                    byte[] buf = new byte[1024 * 1024];
+                    int len;
+                    while ((len = in.read(buf)) >= 0) out.write(buf, 0, len);
+                }
+                modelReady = modelBridge.load(target.getAbsolutePath());
+                msg = modelReady ? "Real on-device model loaded. Ask a question!" : "Model failed to load. Check GGUF compatibility and available RAM.";
+            } catch (Exception e) { msg = "Model import failed: " + e.getMessage(); }
+            final String result = msg;
+            runOnUiThread(() -> {
+                addEntry("MODEL", result);
+                statusView.setText(modelReady ? "● CORE ONLINE  •  AI READY  •  OFFLINE" : "● CORE ONLINE  •  NO MODEL LOADED");
+            });
+        });
+    }
+
     @Override protected void onDestroy() {
         if (core != null) core.stop();
+        worker.execute(() -> modelBridge.unload());
+        worker.shutdown();
         super.onDestroy();
     }
 }

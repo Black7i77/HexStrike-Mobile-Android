@@ -9,3 +9,46 @@ local.properties
 .idea/
 *.iml
 .DS_Store
+
+app/src/main/cpp/llama.cpp/
+*.gguf
+
+# Never commit the 1+ GB GGUF model
+*.gguf
+*.gguf.part
+
+# HexStrike local AI files
+*.gguf
+*.apk
+local.properties
+.gradle/
+build/
+app/build/
+.cxx/
+app/.cxx/
+app/src/main/cpp/llama.cpp/
+*.backup
+*.before-logging
+
+# Private diagnostics
+*.hprof
+*.log
+*.pid
+*.tmp
+
+# Models and compiled applications
+*.gguf
+*.apk
+
+# Local development files
+local.properties
+.gradle/
+build/
+app/build/
+.cxx/
+app/.cxx/
+app/src/main/cpp/llama.cpp/
+
+# Backups
+*.backup
+*.before-logging
