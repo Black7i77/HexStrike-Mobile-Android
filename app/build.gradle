@@ -1,0 +1,13 @@
+plugins { id 'com.android.application' }
+android {
+    namespace 'com.scarface.hexstrikemobile'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'com.scarface.hexstrikemobile'
+        minSdk 26
+        targetSdk 35
+        versionCode 6
+        versionName '0.6.0'
+    }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+}
