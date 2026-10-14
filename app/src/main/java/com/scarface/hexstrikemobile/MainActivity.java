@@ -29,6 +29,10 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public final class MainActivity extends Activity {
+    private volatile int wolfThreads = 4;
+    private int wolfModeIndex = 1;
+    private static final String[] WOLF_MODES = {"BATTERY", "BALANCED", "TURBO"};
+    private static final int[] WOLF_THREADS = {2, 4, 6};
     private LocalCore core;
     private ModelBridge modelBridge;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
@@ -121,7 +125,7 @@ public final class MainActivity extends Activity {
         TextView title = text("HEXSTRIKE MOBILE", 15, RED);
         title.setTypeface(null, Typeface.BOLD);
         headings.addView(title);
-        headings.addView(text("UNOFFICIAL  •  OFFLINE AI  •  v0.8", 9, Color.LTGRAY));
+        headings.addView(text("UNOFFICIAL  •  OFFLINE AI  •  v0.9", 9, Color.LTGRAY));
         header.addView(headings, new LinearLayout.LayoutParams(0, -2, 1f));
         root.addView(header, new LinearLayout.LayoutParams(-1, dp(40)));
 
@@ -199,6 +203,13 @@ public final class MainActivity extends Activity {
         root.addView(footer, footParams);
 
         health.setOnClickListener(v -> addEntry("DEVICE REPORT", core.deviceReport()));
+        // A long press switches WolfCore modes without altering the v0.8 layout.
+        health.setOnLongClickListener(v -> {
+            wolfModeIndex = (wolfModeIndex + 1) % WOLF_MODES.length;
+            wolfThreads = WOLF_THREADS[wolfModeIndex];
+            addEntry("WOLFCORE", "Mode: " + WOLF_MODES[wolfModeIndex] + " (" + wolfThreads + " CPU threads). Long-press DEVICE CHECK to switch.");
+            return true;
+        });
         clear.setOnClickListener(v -> {
             Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT);
             pick.setType("*/*");
@@ -215,14 +226,26 @@ public final class MainActivity extends Activity {
                 return;
             }
             sendButton.setEnabled(false);
-            addEntry("HEXSTRIKE", "Generating offline response…");
+            final String prefix = transcript.getText().toString() + "\nAI\n";
+            transcript.setText(prefix + "Generating offline response…");
+            final int threads = wolfThreads;
             worker.execute(() -> {
+                final long started = android.os.SystemClock.elapsedRealtime();
+                modelBridge.setStreamListener(partial -> runOnUiThread(() -> {
+                    if (!isFinishing() && !isDestroyed()) {
+                        transcript.setText(prefix + partial);
+                        scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
+                    }
+                }));
                 String result;
-                try { result = modelBridge.generate(question, 240); }
+                try { result = modelBridge.generateStream(question, 240, threads); }
                 catch (Exception e) { result = "ERROR: " + e.getMessage(); }
+                modelBridge.setStreamListener(null);
                 final String reply = result;
+                final long elapsed = android.os.SystemClock.elapsedRealtime() - started;
                 runOnUiThread(() -> {
-                    addEntry("AI", reply);
+                    transcript.setText(prefix + reply + "\n\n[WolfCore " + threads + " threads • " + elapsed + " ms total]\n");
+                    scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
                     sendButton.setEnabled(true);
                 });
             });

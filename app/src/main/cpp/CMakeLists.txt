@@ -12,6 +12,13 @@ set(GGML_CPU_KLEIDIAI OFF CACHE BOOL "" FORCE)
 if (NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/CMakeLists.txt")
   message(FATAL_ERROR "Missing llama.cpp source: run git clone https://github.com/ggml-org/llama.cpp app/src/main/cpp/llama.cpp")
 endif()
+
+# WolfCore CPU performance experiment
+# Optimize native inference even in Android debug builds.
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    add_compile_options(-O3)
+endif()
+
 add_subdirectory(llama.cpp EXCLUDE_FROM_ALL)
 add_library(hexstrike_llm SHARED model_jni.cpp)
 target_include_directories(hexstrike_llm PRIVATE llama.cpp/include)

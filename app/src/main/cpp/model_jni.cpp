@@ -1,9 +1,9 @@
-#include <android/log.h>
 #include <jni.h>
 #include <string>
 #include <vector>
 #include <mutex>
 #include <algorithm>
+#include <chrono>
 #include "llama.h"
 
 static void llama_batch_add(llama_batch &batch, llama_token token, llama_pos pos, std::initializer_list<llama_seq_id> ids, bool logits) {
@@ -49,10 +49,7 @@ Java_com_scarface_hexstrikemobile_ModelBridge_unload(JNIEnv *, jobject) {
     if (model) { llama_model_free(model); model = nullptr; }
 }
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_scarface_hexstrikemobile_ModelBridge_generate(JNIEnv *env, jobject, jstring question, jint max_tokens) {
-    __android_log_print(ANDROID_LOG_INFO, "HexStrikeAI",
-                        "Generation requested");
-
+Java_com_scarface_hexstrikemobile_ModelBridge_generateStream(JNIEnv *env, jobject bridge, jstring question, jint max_tokens, jint thread_count) {
     std::lock_guard<std::mutex> lock(guard);
     if (!model) return jstr(env, "ERROR: Import and load a GGUF model first.");
     const llama_vocab * vocab = llama_model_get_vocab(model);
@@ -60,19 +57,16 @@ Java_com_scarface_hexstrikemobile_ModelBridge_generate(JNIEnv *env, jobject, jst
     // Qwen2.5 instruct template. Select a compatible Qwen2.5-Instruct GGUF.
     const std::string input = "<|im_start|>system\nYou are HexStrike Mobile, an offline assistant. Explain clearly. You do not scan or execute commands.\n<|im_end|>\n<|im_start|>user\n" + query + "\n<|im_end|>\n<|im_start|>assistant\n";
     int n = -llama_tokenize(vocab, input.c_str(), (int)input.size(), nullptr, 0, true, true);
-    if (n <= 0 || n > 3400) return jstr(env, "ERROR: Prompt too long or tokenization failed.");
+    if (n <= 0 || n > 1536) return jstr(env, "ERROR: Prompt too long or tokenization failed.");
     std::vector<llama_token> tokens(n);
     int actual = llama_tokenize(vocab, input.c_str(), (int)input.size(), tokens.data(), n, true, true);
     if (actual <= 0) return jstr(env, "ERROR: Could not tokenize input.");
     llama_context_params cp = llama_context_default_params();
-    cp.n_ctx = 1024;
+    cp.n_ctx = 2048;
     cp.n_batch = 256;
-    cp.n_threads = 4;
-    __android_log_print(ANDROID_LOG_INFO, "HexStrikeAI",
-                         "Creating inference context");
+    cp.n_threads = std::max(1, std::min(8, (int)thread_count));
+    cp.n_threads_batch = cp.n_threads;
     llama_context * ctx = llama_init_from_model(model, cp);
-    __android_log_print(ANDROID_LOG_INFO, "HexStrikeAI",
-                         "Context created: %s", ctx ? "YES" : "NO");
     if (!ctx) return jstr(env, "ERROR: Could not allocate model context. Try a smaller GGUF.");
     llama_sampler * sampler = llama_sampler_init_greedy();
     llama_batch batch = llama_batch_init(256, 0, 1);
@@ -87,26 +81,37 @@ Java_com_scarface_hexstrikemobile_ModelBridge_generate(JNIEnv *env, jobject, jst
         ok = llama_decode(ctx, batch) == 0;
         processed += count;
     }
-    __android_log_print(ANDROID_LOG_INFO, "HexStrikeAI",
-                         "Prompt processing finished: %s",
-                         ok ? "YES" : "NO");
     std::string response;
-    int limit = std::min(96, std::max(1, (int)max_tokens));
+    jclass bridgeClass = env->GetObjectClass(bridge);
+    jmethodID streamMethod = env->GetMethodID(bridgeClass, "onStreamUpdate", "(Ljava/lang/String;)V");
+    int lastReportedLength = 0;
+    int limit = std::min(512, std::max(1, (int)max_tokens));
     for (int i=0; i<limit && ok; ++i) {
-        if (i % 10 == 0)
-            __android_log_print(ANDROID_LOG_INFO, "HexStrikeAI",
-                                "Generating token %d", i);
         llama_token next = llama_sampler_sample(sampler, ctx, -1);
         if (llama_vocab_is_eog(vocab, next)) break;
         char piece[512];
         int len = llama_token_to_piece(vocab, next, piece, sizeof(piece), 0, true);
         if (len > 0 && len < (int)sizeof(piece)) response.append(piece, len);
+        // Update the existing console every ~48 bytes, not per-token.
+        // Full-text updates avoid splitting UTF-8 code points at JNI boundaries.
+        if (streamMethod && (int)response.size() - lastReportedLength >= 48) {
+            jstring update = jstr(env, response);
+            env->CallVoidMethod(bridge, streamMethod, update);
+            env->DeleteLocalRef(update);
+            if (env->ExceptionCheck()) { env->ExceptionClear(); streamMethod = nullptr; }
+            lastReportedLength = (int)response.size();
+        }
         llama_batch_clear(batch);
         llama_batch_add(batch, next, actual+i, {0}, true);
         ok = llama_decode(ctx, batch) == 0;
     }
-    __android_log_print(ANDROID_LOG_INFO, "HexStrikeAI",
-                         "Generation loop finished");
+    if (streamMethod && !response.empty()) {
+        jstring update = jstr(env, response);
+        env->CallVoidMethod(bridge, streamMethod, update);
+        env->DeleteLocalRef(update);
+        if (env->ExceptionCheck()) env->ExceptionClear();
+    }
+    env->DeleteLocalRef(bridgeClass);
     llama_batch_free(batch);
     llama_sampler_free(sampler);
     llama_free(ctx);
