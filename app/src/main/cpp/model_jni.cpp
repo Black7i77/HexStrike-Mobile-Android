@@ -55,7 +55,7 @@ Java_com_scarface_hexstrikemobile_ModelBridge_generateStream(JNIEnv *env, jobjec
     const llama_vocab * vocab = llama_model_get_vocab(model);
     const std::string query = utf8(env, question);
     // Qwen2.5 instruct template. Select a compatible Qwen2.5-Instruct GGUF.
-    const std::string input = "<|im_start|>system\nYou are HexStrike Mobile, an offline assistant. Explain clearly. You do not scan or execute commands.\n<|im_end|>\n<|im_start|>user\n" + query + "\n<|im_end|>\n<|im_start|>assistant\n";
+    const std::string input = "<|im_start|>system\nYou are HexStrike Mobile AI, powered by WolfCore. Be friendly, professional and accurate. Answer in clear, natural English. Keep answers concise unless more detail is requested. Use occasional relevant emojis such as 🐺 🐧 💻 🛡️ 📱. Do not overuse emojis. Support other languages when requested. If you are uncertain, say so rather than inventing facts. WormGPT refers to an AI chatbot marketed for cybercrime, not an email-spreading computer worm. GPT stands for Generative Pre-trained Transformer. You do not scan devices or execute commands. Focus on ethical defensive cybersecurity.\n<|im_end|>\n<|im_start|>user\n" + query + "\n<|im_end|>\n<|im_start|>assistant\n";
     int n = -llama_tokenize(vocab, input.c_str(), (int)input.size(), nullptr, 0, true, true);
     if (n <= 0 || n > 1536) return jstr(env, "ERROR: Prompt too long or tokenization failed.");
     std::vector<llama_token> tokens(n);
